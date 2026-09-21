@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>Garmin Telemetry Dashboard</title>
+
+    <!-- Hojas de estilo Leaflet y locales -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', path='/css/style.css') }}"
+    />
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>Panel de Telemetría Garmin</h1>
+        <button id="btn-sync" onclick="syncData()">
+          Sincronizar Última Actividad
+        </button>
+      </div>
+
+      <div id="status"></div>
+
+      {% for act in activities %}
+      <div class="garmin-card">
+        <!-- Subcabecera estilo Garmin -->
+        <div class="garmin-header-sub">
+          <span
+            >{{ act.sport_type.type_key if act.sport_type and
+            act.sport_type.type_key else "CICLISMO EN RUTA" }}</span
+          >
+          &bull; POR <strong>FRANC</strong> EL
+          <span
+            >{% if act.start_time_local %}{{
+            act.start_time_local.strftime('%Y-%m-%d @ %I:%M %p') }}{% else %}Sin
+            fecha{% endif %}</span
+          >
+        </div>
+
+        <!-- Título principal -->
+        <h2 class="garmin-title">
+          {{ act.name or "Torroella de Montgrí Ciclismo en ruta" }}
+        </h2>
+
+        <!-- Fila de métricas clave -->
+        <div class="garmin-metrics-row">
+          <div class="metric-item">
+            <span class="metric-value"
+              >{{ ((act.distance or 0) / 1000) | round(2) }} km</span
+            >
+            <span class="metric-label">Distancia</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-value"
+              >{{ act.elapsed_time_str or "01:00:25" }}</span
+            >
+            <span class="metric-label">Tiempo</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-value"
+              >{{ ((act.average_speed or 0) * 3.6) | round(1) }} km/h</span
+            >
+            <span class="metric-label">Velocidad media</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-value"
+              >{{ (act.total_elevation_gain or 0) | round(0) }} m</span
+            >
+            <span class="metric-label">Ascenso total</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-value"
+              >{{ (act.average_watts or "--") }} W</span
+            >
+            <span class="metric-label">Potencia media</span>
+          </div>
+        </div>
+
+        <!-- Contenedor del Mapa -->
+        <div class="garmin-map-wrapper">
+          <!-- Selector flotante sobre el mapa -->
+          <div class="garmin-map-overlay-selector">
+            <select
+              id="color-mode-{{ act.id }}"
+              onchange="switchMapColorMode('{{ act.id }}', this.value)"
+            >
+              <option value="watts">Potencia (W)</option>
+              <option value="grade">Pendiente (%)</option>
+              <option value="speed" selected>Velocidad (km/h)</option>
+            </select>
+          </div>
+
+          <!-- Mapa Leaflet -->
+          <div id="map-{{ act.id }}" class="map garmin-style-map"></div>
+
+          <!-- Leyenda inferior de colores -->
+          <div class="garmin-gradient-legend">
+            <span id="legend-min-{{ act.id }}">Menor velocidad</span>
+            <div class="gradient-bar"></div>
+            <span id="legend-max-{{ act.id }}">Mayor velocidad</span>
+          </div>
+        </div>
+
+        <!-- Tarjeta de Gráfica de Altitud (Único bloque limpio) -->
+        <div
+          class="garmin-chart-card"
+          style="
+            margin-top: 15px;
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+          "
+        >
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 10px;
+            "
+          >
+            <h4
+              style="
+                margin: 0;
+                font-weight: 500;
+                color: #2d3748;
+                font-size: 14px;
+              "
+            >
+              Altitud / Perfil de elevación
+            </h4>
+
+            <div
+              class="chart-mode-toggle"
+              style="
+                display: inline-flex;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                overflow: hidden;
+                font-size: 12px;
+              "
+            >
+              <button
+                id="btn-time-{{ act.id }}"
+                onclick="switchChartXAxis('{{ act.id }}', 'time')"
+                style="
+                  padding: 4px 10px;
+                  border: none;
+                  background: #f8fafc;
+                  color: #475569;
+                  cursor: pointer;
+                  font-weight: 500;
+                "
+              >
+                Tiempo
+              </button>
+              <button
+                id="btn-dist-{{ act.id }}"
+                onclick="switchChartXAxis('{{ act.id }}', 'dist')"
+                style="
+                  padding: 4px 10px;
+                  border: none;
+                  background: #475569;
+                  color: #fff;
+                  cursor: pointer;
+                  font-weight: 500;
+                "
+              >
+                Distancia
+              </button>
+            </div>
+          </div>
+
+          <div style="height: 120px; position: relative">
+            <canvas id="chart-{{ act.id }}"></canvas>
+          </div>
+        </div>
+
+        <!-- Telemetría JSON en script aislado -->
+        <script id="telemetry-data-{{ act.id }}" type="application/json">
+          {{ (act.telemetry_json or []) | tojson | safe }}
+        </script>
+      </div>
+      {% else %}
+      <p style="color: #666; text-align: center; margin-top: 40px">
+        No hay actividades guardadas aún. Haz clic en "Sincronizar".
+      </p>
+      {% endfor %}
+    </div>
+
+    <!-- Scripts estáticos -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/static/js/elevationChart.js"></script>
+    <script src="/static/js/map.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+  </body>
+</html>

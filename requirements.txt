@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+garminconnect
+fitparse
+python-dotenv
+jinja2
