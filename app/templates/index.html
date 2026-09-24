@@ -4,12 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <title>Garmin Telemetry Dashboard</title>
+    <title>Panel de Telemetría Garmin</title>
 
-    <!-- Hojas de estilo Leaflet y locales -->
+    <!-- Estilos de MapLibre GL JS -->
     <link
       rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css"
     />
     <link
       rel="stylesheet"
@@ -83,12 +83,64 @@
         </div>
 
         <!-- Contenedor del Mapa -->
-        <div class="garmin-map-wrapper">
-          <!-- Selector flotante sobre el mapa -->
-          <div class="garmin-map-overlay-selector">
+        <div class="garmin-map-wrapper" style="position: relative">
+          <!-- Controles flotantes sobre el mapa -->
+          <!-- Controles flotantes sobre el mapa (desplazados a la izquierda) -->
+          <div
+            class="garmin-map-overlay-selector"
+            style="
+              display: flex;
+              gap: 8px;
+              position: absolute;
+              top: 12px;
+              right: 50px;
+              z-index: 1000;
+            "
+          >
+            <!-- Selector de Capas Base -->
+            <select
+              id="map-style-{{ act.id }}"
+              onchange="switchBaseMapStyle('{{ act.id }}', this.value)"
+              style="font-size: 11px; padding: 4px 8px"
+            >
+              <option value="osm">Callejero (OSM)</option>
+              <option value="satellite" selected>Satélite (Esri)</option>
+              <option value="topo">Relieve (OpenTopo)</option>
+            </select>
+
+            <!-- Selector de velocidad de simulación -->
+            <select
+              id="sim-speed-{{ act.id }}"
+              style="font-size: 11px; padding: 4px 8px"
+            >
+              <option value="1">1x</option>
+              <option value="2" selected>2x</option>
+              <option value="5">5x</option>
+              <option value="10">10x</option>
+            </select>
+
+            <!-- Botón Play / Pausa -->
+            <button
+              id="btn-play-{{ act.id }}"
+              onclick="togglePlaySimulation('{{ act.id }}')"
+              style="
+                padding: 4px 12px;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+              "
+            >
+              ▶ Play
+            </button>
+
+            <!-- Selector de coloreado por métrica -->
             <select
               id="color-mode-{{ act.id }}"
               onchange="switchMapColorMode('{{ act.id }}', this.value)"
+              style="font-size: 11px; padding: 4px 8px"
             >
               <option value="watts">Potencia (W)</option>
               <option value="grade">Pendiente (%)</option>
@@ -96,8 +148,12 @@
             </select>
           </div>
 
-          <!-- Mapa Leaflet -->
-          <div id="map-{{ act.id }}" class="map garmin-style-map"></div>
+          <!-- Mapa -->
+          <div
+            id="map-{{ act.id }}"
+            class="map garmin-style-map"
+            style="height: 450px"
+          ></div>
 
           <!-- Leyenda inferior de colores -->
           <div class="garmin-gradient-legend">
@@ -107,7 +163,7 @@
           </div>
         </div>
 
-        <!-- Tarjeta de Gráfica de Altitud (Único bloque limpio) -->
+        <!-- Tarjeta de Gráfica de Altitud -->
         <div
           class="garmin-chart-card"
           style="
@@ -126,17 +182,6 @@
               margin-bottom: 10px;
             "
           >
-            <h4
-              style="
-                margin: 0;
-                font-weight: 500;
-                color: #2d3748;
-                font-size: 14px;
-              "
-            >
-              Altitud / Perfil de elevación
-            </h4>
-
             <div
               class="chart-mode-toggle"
               style="
@@ -178,12 +223,12 @@
             </div>
           </div>
 
-          <div style="height: 120px; position: relative">
+          <div style="height: 220px; position: relative">
             <canvas id="chart-{{ act.id }}"></canvas>
           </div>
         </div>
 
-        <!-- Telemetría JSON en script aislado -->
+        <!-- Telemetría JSON -->
         <script id="telemetry-data-{{ act.id }}" type="application/json">
           {{ (act.telemetry_json or []) | tojson | safe }}
         </script>
@@ -196,8 +241,8 @@
     </div>
 
     <!-- Scripts estáticos -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="/static/js/elevationChart.js"></script>
+    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+    <script src="/static/js/activityChart.js"></script>
     <script src="/static/js/map.js"></script>
     <script src="/static/js/dashboard.js"></script>
   </body>

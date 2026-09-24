@@ -1,157 +1,370 @@
-// Almacén global de mapas
+// Almacén global de instancias de mapa
 const mapInstances = {};
 
-function renderMapForActivity(actId, points) {
-  const containerId = `map-${actId}`;
-
-  // 1. Definir los diferentes proveedores de mapas
-  const openStreetMap = L.tileLayer(
-    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    {
-      attribution: "&copy; OpenStreetMap contributors",
-      maxZoom: 19,
-    }
-  );
-
-  const esriSatellite = L.tileLayer(
+// Fuentes de mapas base disponibles
+const BASE_TILE_SOURCES = {
+  osm: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  satellite:
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    {
-      attribution:
-        "Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community",
-      maxZoom: 19,
-    }
-  );
+  topo: "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+};
 
-  const openTopoMap = L.tileLayer(
-    "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-    {
-      attribution:
-        'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',
-      maxZoom: 17,
-    }
-  );
-
-  // 2. Inicializar el mapa con la capa por defecto
-  const map = L.map(containerId, {
-    layers: [openStreetMap],
-  });
-
-  // 3. Crear el objeto de capas base
-  const baseMaps = {
-    Mapa: openStreetMap,
-    Satélite: esriSatellite,
-    Relieve: openTopoMap,
-  };
-
-  // 4. Mover el selector a 'topleft' o 'bottomleft' para no chocar con los botones del header
-  L.control.layers(baseMaps, null, { position: "topleft" }).addTo(map);
-
-  const latlngs = points.map((p) => [p.lat, p.lng]);
-
-  const hoverMarker = L.circleMarker([points[0].lat, points[0].lng], {
-    color: "#2563eb",
-    fillColor: "#3b82f6",
-    fillOpacity: 1,
-    radius: 7,
-    weight: 2,
-  });
-
-  const processedSegments = [];
-  for (let i = 0; i < points.length - 1; i++) {
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const ele1 = p1.elevation ?? p1.alt ?? p1.altitude ?? p1.enhanced_altitude;
-    let grade = p1.grade ?? calculateGrade(p1, p2, ele1, p2.elevation);
-    const speedKmH = calculateSpeed(p1, p2);
-    const watts = p1.watts ?? p1.power ?? null;
-
-    processedSegments.push({ p1, p2, ele1, grade, speedKmH, watts });
-  }
-
-  mapInstances[actId] = {
-    map: map,
-    segments: processedSegments,
-    layers: [],
-    hoverMarker: hoverMarker,
-    currentMode: "speed",
-  };
-
-  drawRouteSegments(actId, "speed");
-
-  if (latlngs.length > 0) {
-    map.fitBounds(latlngs, { padding: [25, 25] });
-  }
-
-  // 5. Forzar el recalculo del tamaño del mapa para evitar la pantalla gris
-  setTimeout(() => {
-    map.invalidateSize();
-    if (latlngs.length > 0) {
-      map.fitBounds(latlngs, { padding: [25, 25] });
-    }
-  }, 200);
-
-  initConnectedChart(actId, points, map, hoverMarker);
+// Función auxiliar para calcular el rumbo/bearing más corto (evita giros bruscos de 360°)
+function getShortestRotation(current, target) {
+  let diff = (target - current) % 360;
+  if (diff < -180) diff += 360;
+  if (diff > 180) diff -= 360;
+  return current + diff;
 }
 
-function drawRouteSegments(actId, mode) {
+// Cálculo del rumbo en grados entre dos puntos
+function calculateBearing(lat1, lon1, lat2, lon2) {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const toDeg = (rad) => (rad * 180) / Math.PI;
+
+  const φ1 = toRad(lat1);
+  const φ2 = toRad(lat2);
+  const Δλ = toRad(lon2 - lon1);
+
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x =
+    Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+// Control de Play / Pausa
+function togglePlaySimulation(actId) {
   const instance = mapInstances[actId];
   if (!instance) return;
 
-  instance.layers.forEach((layer) => instance.map.removeLayer(layer));
-  instance.layers = [];
-  instance.currentMode = mode;
+  if (instance.isPlaying) {
+    pauseSimulation(actId);
+  } else {
+    startSimulation(actId);
+  }
+}
 
-  instance.segments.forEach((seg) => {
-    let color = "#38bdf8";
+function startSimulation(actId) {
+  const instance = mapInstances[actId];
+  const btn = document.getElementById(`btn-play-${actId}`);
+  const speedSelect = document.getElementById(`sim-speed-${actId}`);
+  const multiplier = parseFloat(speedSelect ? speedSelect.value : 2);
 
-    if (mode === "grade") {
-      color = getColorForGrade(seg.grade);
-    } else if (mode === "speed") {
-      color = getColorForSpeed(seg.speedKmH);
-    } else if (mode === "watts") {
-      color = getColorForWatts(seg.watts);
+  if (!instance || !instance.points || instance.points.length < 2) return;
+
+  instance.isPlaying = true;
+  // Reiniciar el estado de interacción manual al dar a Play
+  instance.userIsInteracting = false;
+
+  if (btn) btn.innerHTML = "⏸ Pausa";
+
+  if (instance.simIndex >= instance.points.length - 1) {
+    instance.simIndex = 0;
+    instance.animProgress = 0;
+  }
+
+  // Si es el inicio de la reproducción, orientamos la cámara a la posición 3D inicial
+  const pStart1 = instance.points[instance.simIndex];
+  const pStart2 = instance.points[instance.simIndex + 1] || pStart1;
+  const initialBearing = calculateBearing(
+    pStart1.lat,
+    pStart1.lng,
+    pStart2.lat,
+    pStart2.lng
+  );
+
+  instance.map.easeTo({
+    center: [pStart1.lng, pStart1.lat],
+    zoom: 17.5,
+    pitch: 70,
+    bearing: initialBearing,
+    duration: 500,
+  });
+
+  // Cancelar cualquier frame previo
+  if (instance.animFrameId) cancelAnimationFrame(instance.animFrameId);
+
+  let lastTimestamp = null;
+  const basePointDurationMs = 300 / multiplier;
+
+  if (typeof instance.animProgress === "undefined") {
+    instance.animProgress = 0;
+  }
+
+  function animate(timestamp) {
+    if (!instance.isPlaying) return;
+
+    if (!lastTimestamp) lastTimestamp = timestamp;
+    const deltaTime = timestamp - lastTimestamp;
+    lastTimestamp = timestamp;
+
+    instance.animProgress += deltaTime / basePointDurationMs;
+
+    while (instance.animProgress >= 1) {
+      instance.animProgress -= 1;
+      instance.simIndex++;
+
+      if (instance.simIndex >= instance.points.length - 1) {
+        pauseSimulation(actId);
+        instance.simIndex = 0;
+        instance.animProgress = 0;
+        return;
+      }
     }
 
-    const polyline = L.polyline(
-      [
-        [seg.p1.lat, seg.p1.lng],
-        [seg.p2.lat, seg.p2.lng],
-      ],
-      {
-        color: color,
-        weight: 4,
-        opacity: 0.95,
-      }
-    ).addTo(instance.map);
+    const p1 = instance.points[instance.simIndex];
+    const p2 = instance.points[instance.simIndex + 1] || p1;
+    const t = instance.animProgress;
 
-    polyline.bindTooltip(
-      `
-      <div style="font-size: 12px; line-height: 1.4;">
-        <b>Potencia:</b> ${
-          seg.watts !== null ? Math.round(seg.watts) + " W" : "N/D"
-        }<br/>
-        <b>Pendiente:</b> ${
-          seg.grade !== null ? seg.grade.toFixed(1) + "%" : "N/D"
-        }<br/>
-        <b>Altitud:</b> ${
-          seg.ele1 !== undefined && seg.ele1 !== null
-            ? Math.round(seg.ele1) + "m"
-            : "N/D"
-        }<br/>
-        <b>Velocidad:</b> ${
-          seg.speedKmH !== null ? seg.speedKmH.toFixed(1) + " km/h" : "N/D"
-        }
-      </div>
-    `,
-      { sticky: true }
+    // Interpolación lineal de posición (Lng / Lat)
+    const currentLng = p1.lng + (p2.lng - p1.lng) * t;
+    const currentLat = p1.lat + (p2.lat - p1.lat) * t;
+    const currentCoords = [currentLng, currentLat];
+
+    // Mover el marcador por la ruta SIEMPRE
+    instance.hoverMarker.setLngLat(currentCoords);
+
+    // SOLO mover/reorientar la cámara si el usuario NO ha interactuado manualmente con el mapa
+    if (!instance.userIsInteracting) {
+      const p3 = instance.points[instance.simIndex + 2] || p2;
+      const b1 = calculateBearing(p1.lat, p1.lng, p2.lat, p2.lng);
+      const b2 = calculateBearing(p2.lat, p2.lng, p3.lat, p3.lng);
+      const targetB = getShortestRotation(b1, b2);
+      const currentBearing = b1 + (targetB - b1) * t;
+
+      instance.map.jumpTo({
+        center: currentCoords,
+        bearing: currentBearing,
+      });
+    }
+
+    // Sincronizar gráfica de elevación
+    syncChartCursor(actId, instance.simIndex);
+
+    instance.animFrameId = requestAnimationFrame(animate);
+  }
+
+  instance.animFrameId = requestAnimationFrame(animate);
+}
+
+function pauseSimulation(actId) {
+  const instance = mapInstances[actId];
+  const btn = document.getElementById(`btn-play-${actId}`);
+
+  if (!instance) return;
+
+  instance.isPlaying = false;
+  if (btn) btn.innerHTML = "▶ Play";
+
+  if (instance.animFrameId) {
+    cancelAnimationFrame(instance.animFrameId);
+    instance.animFrameId = null;
+  }
+}
+
+function syncChartCursor(actId, pointIndex) {
+  const chartInstance =
+    typeof chartInstances !== "undefined" ? chartInstances[actId]?.chart : null;
+  if (!chartInstance) return;
+
+  const activeSegment = chartInstance.getDatasetMeta(0).data[pointIndex];
+  if (activeSegment) {
+    chartInstance.setActiveElements([{ datasetIndex: 0, index: pointIndex }]);
+    chartInstance.tooltip.setActiveElements(
+      [{ datasetIndex: 0, index: pointIndex }],
+      { x: activeSegment.x, y: activeSegment.y }
     );
+    chartInstance.update("none");
+  }
+}
 
-    instance.layers.push(polyline);
+function renderMapForActivity(actId, points) {
+  const containerId = `map-${actId}`;
+  if (!points || points.length === 0) return;
+
+  const startLngLat = [points[0].lng, points[0].lat];
+
+  const map = new maplibregl.Map({
+    container: containerId,
+    style: {
+      version: 8,
+      sources: {
+        "base-raster-source": {
+          type: "raster",
+          tiles: [BASE_TILE_SOURCES.satellite],
+          tileSize: 256,
+          attribution: "&copy; Esri",
+        },
+      },
+      layers: [
+        {
+          id: "base-raster-layer",
+          type: "raster",
+          source: "base-raster-source",
+          minzoom: 0,
+          maxzoom: 19,
+        },
+      ],
+    },
+    center: startLngLat,
+    zoom: 14,
+    pitch: 60,
+    bearing: -20,
+  });
+
+  map.addControl(new maplibregl.NavigationControl());
+
+  map.on("load", () => {
+    const features = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      // Resolver la elevación tanto para p1 como para p2
+      const ele1 =
+        p1.elevation ?? p1.alt ?? p1.altitude ?? p1.enhanced_altitude;
+      const ele2 =
+        p2.elevation ?? p2.alt ?? p2.altitude ?? p2.enhanced_altitude; // <-- AÑADIR ESTA LÍNEA
+
+      // Pasar ele2 a calculateGrade
+      const grade = p1.grade ?? calculateGrade(p1, p2, ele1, ele2); // <-- CORREGIR AQUÍ
+      const speedKmH = calculateSpeed(p1, p2);
+      const watts = p1.watts ?? p1.power ?? null;
+
+      features.push({
+        type: "Feature",
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [p1.lng, p1.lat],
+            [p2.lng, p2.lat],
+          ],
+        },
+        properties: {
+          speed: speedKmH || 0,
+          grade: grade || 0,
+          watts: watts || 0,
+          colorSpeed: getColorForSpeed(speedKmH),
+          colorGrade: getColorForGrade(grade),
+          colorWatts: getColorForWatts(watts),
+        },
+      });
+    }
+
+    map.addSource(`route-source-${actId}`, {
+      type: "geojson",
+      data: {
+        type: "FeatureCollection",
+        features: features,
+      },
+    });
+
+    map.addLayer({
+      id: `route-layer-${actId}`,
+      type: "line",
+      source: `route-source-${actId}`,
+      layout: {
+        "line-join": "round",
+        "line-cap": "round",
+      },
+      paint: {
+        "line-color": ["get", "colorSpeed"],
+        "line-width": 5,
+      },
+    });
+
+    const markerEl = document.createElement("div");
+    markerEl.style.width = "14px";
+    markerEl.style.height = "14px";
+    markerEl.style.backgroundColor = "#2563eb";
+    markerEl.style.border = "2px solid white";
+    markerEl.style.borderRadius = "50%";
+    markerEl.style.boxShadow = "0 0 6px rgba(0,0,0,0.5)";
+
+    const hoverMarker = new maplibregl.Marker({ element: markerEl })
+      .setLngLat(startLngLat)
+      .addTo(map);
+
+    const bounds = new maplibregl.LngLatBounds();
+    points.forEach((p) => bounds.extend([p.lng, p.lat]));
+    map.fitBounds(bounds, { padding: 40, pitch: 60 });
+
+    mapInstances[actId] = {
+      map: map,
+      points: points,
+      hoverMarker: hoverMarker,
+      simIndex: 0,
+      animProgress: 0,
+      animFrameId: null,
+      isPlaying: false,
+      userIsInteracting: false,
+    };
+
+    // Detectar cuando el usuario interactúa manualmente (arrastra, zoom con rueda o doble clic)
+    const setInteracting = () => {
+      if (mapInstances[actId]) {
+        mapInstances[actId].userIsInteracting = true;
+      }
+    };
+
+    map.on("dragstart", setInteracting);
+    map.on("rotatestart", setInteracting);
+    map.on("pitchstart", setInteracting);
+    map.on("zoomstart", (e) => {
+      // Solo consideramos interacción manual si el zoom proviene del usuario (no de animaciones)
+      if (e.originalEvent) {
+        setInteracting();
+      }
+    });
+
+    if (typeof initConnectedChart === "function") {
+      initConnectedChart(actId, points, map, hoverMarker);
+    }
   });
 }
 
+function switchBaseMapStyle(actId, styleKey) {
+  const instance = mapInstances[actId];
+  if (!instance || !BASE_TILE_SOURCES[styleKey]) return;
+
+  const tileUrl = BASE_TILE_SOURCES[styleKey];
+  const map = instance.map;
+
+  if (map.getSource("base-raster-source")) {
+    map.removeLayer("base-raster-layer");
+    map.removeSource("base-raster-source");
+
+    map.addSource("base-raster-source", {
+      type: "raster",
+      tiles: [tileUrl],
+      tileSize: 256,
+    });
+
+    map.addLayer(
+      {
+        id: "base-raster-layer",
+        type: "raster",
+        source: "base-raster-source",
+        minzoom: 0,
+        maxzoom: 19,
+      },
+      `route-layer-${actId}`
+    );
+  }
+}
+
 function switchMapColorMode(actId, mode) {
-  drawRouteSegments(actId, mode);
+  const instance = mapInstances[actId];
+  if (!instance) return;
+
+  let propertyName = "colorSpeed";
+  if (mode === "grade") propertyName = "colorGrade";
+  if (mode === "watts") propertyName = "colorWatts";
+
+  instance.map.setPaintProperty(`route-layer-${actId}`, "line-color", [
+    "get",
+    propertyName,
+  ]);
 
   const minEl = document.getElementById(`legend-min-${actId}`);
   const maxEl = document.getElementById(`legend-max-${actId}`);
@@ -173,20 +386,22 @@ function switchMapColorMode(actId, mode) {
 // Escalas de colores
 function getColorForGrade(grade) {
   if (grade === null || grade === undefined) return "#94a3b8";
-  if (grade < -1) return "#38bdf8";
-  if (grade <= 3) return "#22c55e";
-  if (grade <= 7) return "#eab308";
-  if (grade <= 10) return "#f97316";
-  return "#ef4444";
+  if (grade < -1) return "#38bdf8"; // Azul (Bajada)
+  if (grade <= 2) return "#22c55e"; // Verde (Llano)
+  if (grade <= 5) return "#eab308"; // Amarillo (Pendiente suave)
+  if (grade <= 8) return "#f97316"; // Naranja (Pendiente media)
+  if (grade <= 12) return "#ef4444"; // Rojo (Pendiente dura)
+  return "#a855f7"; // Morado (Pared)
 }
 
 function getColorForSpeed(speed) {
   if (speed === null || speed === undefined) return "#94a3b8";
-  if (speed < 15) return "#ef4444";
-  if (speed < 25) return "#f97316";
-  if (speed < 35) return "#eab308";
-  if (speed < 45) return "#22c55e";
-  return "#38bdf8";
+  if (speed < 15) return "#38bdf8"; // Azul (Menor velocidad)
+  if (speed < 25) return "#22c55e"; // Verde
+  if (speed < 35) return "#eab308"; // Amarillo
+  if (speed < 45) return "#f97316"; // Naranja
+  if (speed < 55) return "#ef4444"; // Rojo
+  return "#a855f7"; // Morado (Mayor velocidad)
 }
 
 function getColorForWatts(watts) {
@@ -199,7 +414,7 @@ function getColorForWatts(watts) {
   return "#a855f7";
 }
 
-// Funciones auxiliares de cálculo
+// Auxiliares de cálculo
 function calculateGrade(p1, p2, ele1, ele2) {
   if (
     ele1 === undefined ||
